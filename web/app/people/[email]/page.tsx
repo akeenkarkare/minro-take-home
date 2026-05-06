@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getPerson, type PersonOut } from "@/lib/api";
+import { getPerson, getRelationships, type PersonOut, type Relationship } from "@/lib/api";
 import { Card, CardBody, CardHeader, ConfidenceBadge } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +17,13 @@ export default async function PersonDetail(props: {
   } catch (e) {
     if (String(e).includes("404")) notFound();
     throw e;
+  }
+
+  let relationships: Relationship[] = [];
+  try {
+    relationships = await getRelationships(decoded);
+  } catch {
+    // non-fatal; just hide the card
   }
 
   return (
@@ -105,6 +112,56 @@ export default async function PersonDetail(props: {
           </CardHeader>
           <CardBody>
             <p className="text-sm">{person.company_description}</p>
+          </CardBody>
+        </Card>
+      ) : null}
+
+      {relationships.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <h2 className="text-base font-semibold">Relationships</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Other people in the dataset connected by company, email domain, university, or city.
+            </p>
+          </CardHeader>
+          <CardBody className="p-0">
+            <ul>
+              {relationships.map((r, i) => (
+                <li
+                  key={`${r.kind}-${r.other.email}-${i}`}
+                  className="flex items-center justify-between border-b border-border px-5 py-3 last:border-0"
+                >
+                  <Link
+                    href={`/people/${encodeURIComponent(r.other.email)}`}
+                    className="flex items-center gap-3"
+                  >
+                    {r.other.avatar_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={r.other.avatar_url}
+                        alt=""
+                        className="h-8 w-8 rounded-full bg-accent object-cover"
+                      />
+                    ) : (
+                      <div className="h-8 w-8 rounded-full bg-accent" />
+                    )}
+                    <span>
+                      <span className="block font-medium">{r.other.name}</span>
+                      <span className="block text-xs text-muted-foreground">
+                        {r.other.email}
+                        {r.other.company ? ` · ${r.other.company}` : ""}
+                      </span>
+                    </span>
+                  </Link>
+                  <span className="flex items-center gap-2">
+                    <span className="rounded-full border border-border bg-accent px-2.5 py-0.5 text-[11px]">
+                      {r.kind.replace(/_/g, " ")}
+                    </span>
+                    <ConfidenceBadge value={r.confidence} />
+                  </span>
+                </li>
+              ))}
+            </ul>
           </CardBody>
         </Card>
       ) : null}

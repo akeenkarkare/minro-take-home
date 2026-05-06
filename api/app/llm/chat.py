@@ -23,6 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.llm import anthropic_client
+from app.services import relationships as rel_svc
 
 
 log = logging.getLogger(__name__)
@@ -53,6 +54,13 @@ Tools:
   Use when the question mentions a topic (fintech, AI, education) or a
   university (MIT, Stanford) that lives in bio/company text.
 - get_person: full record for one email if you need to dig in.
+- relationships_for_person: edges (same_company, same_email_domain,
+  same_university, same_location) connecting this person to others in the
+  dataset. Use for "who in this dataset knows X" / "are there clusters
+  around Y" / "find connections between users".
+- relationships_overview: aggregate view of all relationship clusters in
+  the dataset. Use for "are there groups in here that should know each
+  other" or "which companies have multiple users".
 """
 
 
@@ -119,6 +127,29 @@ def _tools() -> list[dict[str, Any]]:
                 "properties": {"email": {"type": "string"}},
                 "required": ["email"],
             },
+        },
+        {
+            "name": "relationships_for_person",
+            "description": (
+                "Returns edges connecting this email to others in the "
+                "dataset. Each edge has a kind (same_company, "
+                "same_email_domain, same_university, same_location), a "
+                "confidence, and a brief summary of the other person."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {"email": {"type": "string"}},
+                "required": ["email"],
+            },
+        },
+        {
+            "name": "relationships_overview",
+            "description": (
+                "Top relationship clusters across the dataset: which "
+                "companies / email domains / universities / cities have "
+                "more than one person."
+            ),
+            "input_schema": {"type": "object", "properties": {}},
         },
     ]
 
@@ -332,11 +363,46 @@ async def _tool_get_person(
     }
 
 
+async def _tool_relationships_for_person(
+    session: AsyncSession, args: dict[str, Any]
+) -> dict[str, Any]:
+    email = (args.get("email") or "").strip().lower()
+    if not email:
+        return {"error": "email is required"}
+    return {"email": email, "results": await rel_svc.for_person(session, email)}
+
+
+async def _tool_relationships_overview(session: AsyncSession) -> dict[str, Any]:
+    rows = await session.execute(
+        text(
+            """
+            SELECT kind, evidence, count(*) AS n
+            FROM relationships
+            GROUP BY kind, evidence
+            HAVING count(*) >= 1
+            ORDER BY n DESC, kind ASC
+            LIMIT 20
+            """
+        )
+    )
+    clusters = [
+        {"kind": r.kind, "evidence": dict(r.evidence or {}), "edge_count": r.n}
+        for r in rows
+    ]
+    counts_row = await session.execute(
+        text("SELECT kind, count(*) FROM relationships GROUP BY kind")
+    )
+    by_kind = {r[0]: r[1] for r in counts_row}
+    return {"by_kind": by_kind, "clusters": clusters}
+
+
 _TOOL_FNS = {
     "dataset_overview": _tool_dataset_overview,
     "search_people": _tool_search_people,
     "keyword_search": _tool_keyword_search,
     "get_person": _tool_get_person,
+    "relationships_for_person": _tool_relationships_for_person,
+    "relationships_overview": _tool_relationships_overview,
 }
 
 
@@ -405,7 +471,10 @@ async def chat(session: AsyncSession, message: str) -> dict[str, Any]:
                 result_payload: Any = {"error": f"unknown tool {tu.name}"}
             else:
                 try:
-                    result_payload = await fn(session, args) if tu.name != "dataset_overview" else await fn(session)
+                    if tu.name in ("dataset_overview", "relationships_overview"):
+                        result_payload = await fn(session)
+                    else:
+                        result_payload = await fn(session, args)
                 except Exception as e:
                     log.exception("chat tool %s failed", tu.name)
                     result_payload = {"error": str(e)}

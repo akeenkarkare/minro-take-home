@@ -89,6 +89,27 @@ export async function getPerson(email: string): Promise<PersonOut> {
   return getJSON(`/people/${encodeURIComponent(email)}`);
 }
 
+export type Relationship = {
+  kind: string;
+  confidence: number;
+  evidence: Record<string, unknown>;
+  other: {
+    email: string;
+    name: string;
+    title: string | null;
+    company: string | null;
+    location: string | null;
+    avatar_url: string | null;
+  };
+};
+
+export async function getRelationships(email: string): Promise<Relationship[]> {
+  const data = await getJSON<{ results: Relationship[] }>(
+    `/people/${encodeURIComponent(email)}/relationships`
+  );
+  return data.results;
+}
+
 export async function getJob(id: string): Promise<JobOut> {
   return getJSON(`/jobs/${id}`);
 }
