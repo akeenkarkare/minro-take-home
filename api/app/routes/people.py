@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_session
 from app.schemas import PersonOut
+from app.services import relationships as rel_svc
+from app.services.redis_pool import get_pool
 
 
 router = APIRouter()
@@ -101,6 +103,21 @@ async def list_people(
         for r in rows
     ]
     return PeopleListResponse(total=total, items=items)
+
+
+@router.get("/people/{email}/relationships")
+async def get_relationships(
+    email: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    return {"results": await rel_svc.for_person(session, email)}
+
+
+@router.post("/relationships/rebuild")
+async def rebuild_relationships() -> dict[str, str]:
+    pool = await get_pool()
+    job = await pool.enqueue_job("rebuild_relationships")
+    return {"queued_job_id": job.job_id if job else "unknown"}
 
 
 @router.get("/people/{email}", response_model=PersonOut)
