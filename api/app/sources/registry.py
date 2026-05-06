@@ -6,6 +6,7 @@ the system (routes, orchestrator, aggregator) needs no changes.
 from __future__ import annotations
 
 from app.services.orchestrator import Orchestrator
+from app.sources.company_domain import CompanyDomainSource
 from app.sources.github import GitHubSource
 from app.sources.gravatar import GravatarSource
 
@@ -13,3 +14,4 @@ from app.sources.gravatar import GravatarSource
 def register_all(orchestrator: Orchestrator) -> None:
     orchestrator.register(GitHubSource(), concurrency=5)
     orchestrator.register(GravatarSource(), concurrency=8)
+    orchestrator.register(CompanyDomainSource(), concurrency=10)
