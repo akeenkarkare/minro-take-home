@@ -26,14 +26,27 @@ class Orchestrator:
     def __init__(self) -> None:
         self._sources: list[Source] = []
         self._sema: dict[str, asyncio.Semaphore] = {}
+        self._normalizer: Source | None = None
 
     def register(self, source: Source, *, concurrency: int = 5) -> None:
         self._sources.append(source)
         self._sema[source.name] = asyncio.Semaphore(concurrency)
 
+    def register_normalizer(self, source: Source, *, concurrency: int = 5) -> None:
+        """Register a post-pass source that runs after all deterministic sources.
+
+        It receives all prior results as input via `source.with_prior(...)`
+        and is treated identically to other sources by the aggregator.
+        """
+        self._normalizer = source
+        self._sema[source.name] = asyncio.Semaphore(concurrency)
+
     @property
     def source_weights(self) -> dict[str, float]:
-        return {s.name: s.weight for s in self._sources}
+        weights = {s.name: s.weight for s in self._sources}
+        if self._normalizer is not None:
+            weights[self._normalizer.name] = self._normalizer.weight
+        return weights
 
     async def _run_one(self, source: Source, email: str, name: str) -> SourceResult:
         sem = self._sema[source.name]
@@ -53,6 +66,18 @@ class Orchestrator:
         self, session: AsyncSession, email: str, name: str
     ) -> PersonOut:
         results = await self.gather(email, name)
+
+        # Run the normalizer with the deterministic sources' results as input.
+        # The normalizer is stateful (per-call prior results); construct a
+        # fresh instance per enrich so concurrent enriches don't interfere.
+        if self._normalizer is not None:
+            primed = type(self._normalizer)()
+            try:
+                primed.with_prior(results)  # type: ignore[attr-defined]
+            except AttributeError:
+                pass
+            results = results + [await self._run_one(primed, email, name)]
+
         agg = aggregate(results, self.source_weights)
         now = datetime.now(timezone.utc)
 
