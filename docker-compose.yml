@@ -76,11 +76,20 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     environment:
+      # API_URL is for server-side fetches (inside the docker network).
+      # NEXT_PUBLIC_API_URL is exposed to the browser; right now we proxy
+      # through Next.js route handlers so the browser only ever talks to
+      # the web service, but we still expose it for completeness.
+      API_URL: http://api:8000
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     ports:
       - "${WEB_PORT:-3000}:3000"
     depends_on:
       - api
+    volumes:
+      - ./web:/app
+      - /app/node_modules
+      - /app/.next
 
 volumes:
   db-data:
