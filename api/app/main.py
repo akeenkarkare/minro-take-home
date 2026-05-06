@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from sqlalchemy import text
 
 from app.db import engine, session_factory
+from app.routes.chat import router as chat_router
 from app.routes.enrich import router as enrich_router
 from app.routes.jobs import router as jobs_router
 from app.routes.people import router as people_router
@@ -28,6 +29,7 @@ app = FastAPI(title="minro enrichment", lifespan=lifespan)
 app.include_router(enrich_router)
 app.include_router(people_router)
 app.include_router(jobs_router)
+app.include_router(chat_router)
 
 
 @app.get("/health")
