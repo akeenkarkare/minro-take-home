@@ -4,6 +4,10 @@ from fastapi import FastAPI
 from sqlalchemy import text
 
 from app.db import engine, session_factory
+from app.routes.enrich import router as enrich_router
+from app.services import http as http_svc
+from app.services.orchestrator import orchestrator
+from app.sources.registry import register_all
 
 
 @asynccontextmanager
@@ -12,11 +16,14 @@ async def lifespan(app: FastAPI):
     # surface immediately, not on the first request.
     engine()
     session_factory()
+    register_all(orchestrator)
     yield
+    await http_svc.aclose()
     await engine().dispose()
 
 
 app = FastAPI(title="minro enrichment", lifespan=lifespan)
+app.include_router(enrich_router)
 
 
 @app.get("/health")
