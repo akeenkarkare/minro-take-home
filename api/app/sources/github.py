@@ -29,6 +29,7 @@ from app.config import settings
 from app.schemas import FieldSignal, SourceResult
 from app.services import http as http_svc
 from app.services.email_domain import classify
+from app.services.rate_limit import GITHUB_CORE, GITHUB_SEARCH
 
 
 log = logging.getLogger(__name__)
@@ -54,15 +55,25 @@ def _commits_headers() -> dict[str, str]:
     return _headers()
 
 
-async def _gh_get(path: str, params: dict[str, Any] | None = None) -> httpx.Response:
-    # attempts=4 with 60s caps means we tolerate one full rate-limit window
-    # (30/min on search) before giving up.
+async def _gh_get(
+    path: str, params: dict[str, Any] | None = None, *, is_search: bool = False
+) -> httpx.Response:
+    """Single GitHub call gated by a process-wide token bucket.
+
+    is_search=True for /search/* endpoints (30/min ceiling); otherwise the
+    core 5000/hr bucket. The bucket blocks until a token is available, so
+    we never burn rate budget on retries.
+    """
+    if is_search:
+        await GITHUB_SEARCH.take()
+    else:
+        await GITHUB_CORE.take()
     return await http_svc.get(
         f"{GITHUB_API}{path}",
         params=params,
         headers=_headers(),
         host_concurrency=5,
-        attempts=4,
+        attempts=2,  # bucket prevents most rate-limit hits, retry only network blips
     )
 
 
@@ -93,7 +104,7 @@ async def _find_login_by_email(email: str) -> tuple[str, str] | None:
 
     # 1) profile-email search
     try:
-        resp = await _gh_get("/search/users", params={"q": f"{email} in:email"})
+        resp = await _gh_get("/search/users", params={"q": f"{email} in:email"}, is_search=True)
         if resp.status_code == 200:
             items = resp.json().get("items") or []
             if items:
@@ -107,6 +118,7 @@ async def _find_login_by_email(email: str) -> tuple[str, str] | None:
     # 2) commits search — finds users whose commits used this email even if
     # their profile email is private.
     try:
+        await GITHUB_SEARCH.take()
         resp = await http_svc.get(
             f"{GITHUB_API}/search/commits",
             params={"q": f"author-email:{email}", "per_page": 5},
@@ -142,7 +154,9 @@ async def _find_login_by_name(name: str) -> str | None:
     """
     try:
         resp = await _gh_get(
-            "/search/users", params={"q": f'"{name}" type:user', "per_page": 5}
+            "/search/users",
+            params={"q": f'"{name}" type:user', "per_page": 5},
+            is_search=True,
         )
     except Exception as e:
         log.exception("github name search failed")

@@ -11,15 +11,16 @@ from app.services.orchestrator import Orchestrator
 from app.sources.company_domain import CompanyDomainSource
 from app.sources.github import GitHubSource
 from app.sources.gravatar import GravatarSource
+from app.sources.web_search import WebSearchSource
 
 
 def register_all(orchestrator: Orchestrator) -> None:
-    # GitHub search is rate-limited at 30/min and aggressively secondary-
-    # rate-limited on bursts. Fully serialize (concurrency=1) — costs us
-    # latency, but every call lands.
-    orchestrator.register(GitHubSource(), concurrency=1)
+    # GitHub rate is enforced by a global token bucket in app.services.rate_limit,
+    # so concurrency here can be high — workers just queue at the bucket.
+    orchestrator.register(GitHubSource(), concurrency=10)
     orchestrator.register(GravatarSource(), concurrency=8)
     orchestrator.register(CompanyDomainSource(), concurrency=10)
+    orchestrator.register(WebSearchSource(), concurrency=2)
 
     # Register the LLM normalizer only if the API key is configured.
     # Without it the system still works — just without the inference pass.
