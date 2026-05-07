@@ -107,10 +107,11 @@ Per-field importance for the overall mean:
 | Metric | Value |
 |---|---|
 | Records enriched at all (confidence > 0) | 32 / 40 (80%) |
-| Mean confidence among enriched | ~0.66 |
+| Mean confidence among enriched | ~0.65 |
 | `company` filled (among enriched) | 25+ / 32 |
 | `company_domain` filled | 24+ / 32 |
 | Records the LLM normalizer touched | 30+ / 32 |
+| Relationships detected (5 kinds) | 36 edges across same_company, same_email_domain, same_industry, same_location, same_github_org |
 | End-to-end batch time, 40 records | ~60s |
 | Projected batch time, 2,000 records | ~80 min (rate-limited by GitHub free tier) |
 
@@ -159,7 +160,11 @@ After every batch finishes, the worker auto-runs `rebuild_relationships`. Four k
 | `same_company` | 0.9 | normalized company name match |
 | `same_email_domain` | 0.85 | same non-consumer apex email domain |
 | `same_university` | 0.9 | both `.edu` (or `.ac.uk` / `.edu.in`), same domain |
+| `same_github_org` | 0.85 | both have GitHub profiles in the same public org |
+| `same_industry` | 0.65 | LLM batch-classifies each person into one of 12 industry tags (fintech, dev_tools, ai_ml, vc, …); pairs in the same non-`other` tag get an edge |
 | `same_location` | 0.55 | normalized city match (weak signal — same-city colocation is fairly thin) |
+
+The `same_industry` pass is the only LLM-driven kind: a single batched call (Claude Sonnet 4.6 with prompt caching) classifies every enriched record at relationship-rebuild time, then SQL grouping does the rest. **Zero per-pair LLM cost.** This is what catches "Pocket and Clodo and Clicky and Caddy founders all building AI products" without a hard-coded keyword list.
 
 `(email_a, email_b, kind)` is unique-constrained with `email_a < email_b`, so each pair appears once per kind and rebuilds are idempotent. Endpoint: `GET /people/{email}/relationships`. Visible on the person detail page; the chat can use them via `relationships_for_person` and `relationships_overview`.
 
@@ -207,8 +212,9 @@ The signal/people split is what makes adding a new source a one-file change: the
 - Tuesday evening: ~2.5h scaffolding (compose, schema, FastAPI skeleton, orchestrator framework, GitHub source, Gravatar, email classifier).
 - Wednesday: ~6h company-domain source, LLM normalizer, queue + REST API + chat, full Next.js UI, relationship detection, README + calibration sweep.
 - Wednesday evening: ~1.5h scalability work — process-wide token-bucket rate limiter, DuckDuckGo public-search source, scalability writeup.
+- Thursday: ~1.5h spec compliance pass — per-field source attribution UI (the detail page now shows which sources contributed to each field), failed-enrichments view in the upload UI with per-row reasons, two new relationship kinds (`same_github_org`, `same_industry` via batch LLM classification), and a top-level `enrich(email, name) -> dict` matching the spec signature literally.
 
-Total: ~10h of focused work.
+Total: ~11.5h of focused work.
 
 ## Project layout
 
