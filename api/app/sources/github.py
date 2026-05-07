@@ -28,6 +28,7 @@ import httpx
 from app.config import settings
 from app.schemas import FieldSignal, SourceResult
 from app.services import http as http_svc
+from app.services.email_domain import classify
 
 
 log = logging.getLogger(__name__)
@@ -54,8 +55,14 @@ def _commits_headers() -> dict[str, str]:
 
 
 async def _gh_get(path: str, params: dict[str, Any] | None = None) -> httpx.Response:
+    # attempts=4 with 60s caps means we tolerate one full rate-limit window
+    # (30/min on search) before giving up.
     return await http_svc.get(
-        f"{GITHUB_API}{path}", params=params, headers=_headers(), host_concurrency=5
+        f"{GITHUB_API}{path}",
+        params=params,
+        headers=_headers(),
+        host_concurrency=5,
+        attempts=4,
     )
 
 
@@ -71,8 +78,19 @@ def _name_matches(candidate: str | None, target: str) -> bool:
     return all(t in cand for t in _name_tokens(target))
 
 
+class _SearchError(Exception):
+    """Raised when a github search call fails in a way that means
+    'we don't know the answer' (rate limits, 5xx, etc.) — not 'no match'."""
+
+
 async def _find_login_by_email(email: str) -> tuple[str, str] | None:
-    """Return (login, how_found) or None."""
+    """Return (login, how_found) or None for "no match".
+
+    Raises _SearchError if a GitHub call failed transiently — the caller
+    decides whether to swallow or surface it.
+    """
+    failures = 0
+
     # 1) profile-email search
     try:
         resp = await _gh_get("/search/users", params={"q": f"{email} in:email"})
@@ -80,8 +98,11 @@ async def _find_login_by_email(email: str) -> tuple[str, str] | None:
             items = resp.json().get("items") or []
             if items:
                 return items[0]["login"], "profile_email"
+        elif resp.status_code in (403, 429, 502, 503, 504):
+            failures += 1
     except Exception:
         log.exception("github email search failed")
+        failures += 1
 
     # 2) commits search — finds users whose commits used this email even if
     # their profile email is private.
@@ -99,39 +120,55 @@ async def _find_login_by_email(email: str) -> tuple[str, str] | None:
                 login = author.get("login")
                 if login:
                     return login, "commits_email"
+        elif resp.status_code in (403, 429, 502, 503, 504):
+            failures += 1
     except Exception:
         log.exception("github commits search failed")
+        failures += 1
+
+    # If both calls came back with transient errors, surface that — we genuinely
+    # do not know whether this email has a github account.
+    if failures >= 2:
+        raise _SearchError("both email-based searches failed transiently")
 
     return None
 
 
 async def _find_login_by_name(name: str) -> str | None:
     """Best-effort name search. Returns a login only if the top hit's name
-    actually contains all of the target's tokens."""
+    actually contains all of the target's tokens.
+
+    Raises _SearchError on transient failures.
+    """
     try:
         resp = await _gh_get(
             "/search/users", params={"q": f'"{name}" type:user', "per_page": 5}
         )
-        if resp.status_code != 200:
-            return None
-        items = resp.json().get("items") or []
-        for item in items:
-            login = item.get("login")
-            if not login:
-                continue
-            # We need the user's full name to compare — search results don't
-            # include `name`, so we have to read /users/{login}.
-            try:
-                user_resp = await _gh_get(f"/users/{login}")
-            except Exception:
-                continue
-            if user_resp.status_code != 200:
-                continue
-            full_name = (user_resp.json() or {}).get("name") or ""
-            if _name_matches(full_name, name):
-                return login
-    except Exception:
+    except Exception as e:
         log.exception("github name search failed")
+        raise _SearchError(str(e)) from e
+
+    if resp.status_code in (403, 429, 502, 503, 504):
+        raise _SearchError(f"github name search returned {resp.status_code}")
+    if resp.status_code != 200:
+        return None
+
+    items = resp.json().get("items") or []
+    for item in items:
+        login = item.get("login")
+        if not login:
+            continue
+        # We need the user's full name to compare — search results don't
+        # include `name`, so we have to read /users/{login}.
+        try:
+            user_resp = await _gh_get(f"/users/{login}")
+        except Exception:
+            continue
+        if user_resp.status_code != 200:
+            continue
+        full_name = (user_resp.json() or {}).get("name") or ""
+        if _name_matches(full_name, name):
+            return login
     return None
 
 
@@ -228,12 +265,34 @@ class GitHubSource:
     weight = 0.95
 
     async def fetch(self, email: str, name: str) -> SourceResult:
-        # 1) login lookup
-        login_result = await _find_login_by_email(email)
+        # GitHub search is at 30/min and aggressively rate-limited on bursts.
+        # Email-based searches against consumer addresses (@gmail etc.) almost
+        # never match (since GitHub indexes only the public profile email,
+        # which is rarely a personal gmail), so we skip them entirely and
+        # save the rate budget for the much-more-likely name-based path.
+        info = classify(email)
+
+        login_result: tuple[str, str] | None = None
+        if info.kind != "consumer":
+            try:
+                login_result = await _find_login_by_email(email)
+            except _SearchError as e:
+                # On transient failure, fall through to name search rather
+                # than fail outright — name search is the more reliable path
+                # for the dataset shape Minro is testing against.
+                log.warning("github email search transient failure: %s", e)
+
         if login_result:
             login, how = login_result
         else:
-            login = await _find_login_by_name(name) if name else None
+            try:
+                login = await _find_login_by_name(name) if name else None
+            except _SearchError as e:
+                return SourceResult(
+                    source=self.name,
+                    raw={"matched": False, "transient_failure": "name_search"},
+                    error=str(e),
+                )
             how = "name_match" if login else "not_found"
 
         if not login:

@@ -87,14 +87,32 @@ async def request(
             with attempt:
                 resp = await client().request(method, url, **kwargs)
                 # Retry on 429 / 5xx as well by raising a retryable error.
-                if resp.status_code == 429 or resp.status_code >= 500:
-                    # Honor Retry-After if present.
+                # Also retry on 403 when github tells us we're rate-limited
+                # (which they signal with x-ratelimit-remaining: 0).
+                gh_rate_limited = (
+                    resp.status_code == 403
+                    and resp.headers.get("x-ratelimit-remaining") == "0"
+                )
+                if resp.status_code == 429 or resp.status_code >= 500 or gh_rate_limited:
+                    # Honor whichever wait signal is most specific.
                     retry_after = resp.headers.get("Retry-After")
+                    rl_reset = resp.headers.get("x-ratelimit-reset")
+                    sleep_for: float | None = None
                     if retry_after:
                         try:
-                            await asyncio.sleep(min(float(retry_after), 30))
+                            sleep_for = min(float(retry_after), 65)
                         except ValueError:
-                            await asyncio.sleep(1 + random.random())
+                            pass
+                    if sleep_for is None and rl_reset:
+                        try:
+                            import time
+                            sleep_for = max(0.0, float(rl_reset) - time.time()) + 1
+                            sleep_for = min(sleep_for, 65)
+                        except ValueError:
+                            pass
+                    if sleep_for is None:
+                        sleep_for = 1 + random.random()
+                    await asyncio.sleep(sleep_for)
                     raise httpx.NetworkError(
                         f"{resp.status_code} from {host}"
                     )

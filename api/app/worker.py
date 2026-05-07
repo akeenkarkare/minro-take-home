@@ -36,4 +36,4 @@ class WorkerSettings:
     on_shutdown = shutdown
     # Tune for I/O-heavy workload — most time is spent waiting on HTTP.
     max_jobs = 20
-    job_timeout = 120  # individual enrich, including LLM call
+    job_timeout = 300  # individual enrich; allow time for github rate-limit sleeps

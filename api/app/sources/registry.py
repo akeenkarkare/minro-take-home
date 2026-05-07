@@ -14,7 +14,10 @@ from app.sources.gravatar import GravatarSource
 
 
 def register_all(orchestrator: Orchestrator) -> None:
-    orchestrator.register(GitHubSource(), concurrency=5)
+    # GitHub search is rate-limited at 30/min and aggressively secondary-
+    # rate-limited on bursts. Fully serialize (concurrency=1) — costs us
+    # latency, but every call lands.
+    orchestrator.register(GitHubSource(), concurrency=1)
     orchestrator.register(GravatarSource(), concurrency=8)
     orchestrator.register(CompanyDomainSource(), concurrency=10)
 
