@@ -37,7 +37,7 @@ async def enrich_one(ctx: dict[str, Any], email: str, name: str, job_id: str) ->
     except Exception as e:
         log.exception("enrich_one failed for %s", email)
         async with session_factory()() as s2:
-            await jobs_store.bump_failed(s2, job_id, str(e))
+            await jobs_store.bump_failed(s2, job_id, str(e), email=email)
             completed = await jobs_store.mark_complete_if_done(s2, job_id)
         if completed:
             await _on_batch_complete(ctx)

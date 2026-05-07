@@ -69,16 +69,40 @@ async def bump_done(session: AsyncSession, job_id: str) -> tuple[int, int, int]:
     return tuple(row.one())  # type: ignore[return-value]
 
 
-async def bump_failed(session: AsyncSession, job_id: str, error: str) -> tuple[int, int, int]:
+async def bump_failed(
+    session: AsyncSession,
+    job_id: str,
+    error: str,
+    *,
+    email: str | None = None,
+) -> tuple[int, int, int]:
+    """Increment failed_count and append a per-row failure record to metadata.failures.
+
+    `error` is truncated to a sane length. We keep the per-row failure list
+    so the upload UI can show which specific records failed and why.
+    """
+    import json as _json
+
+    failure_record = _json.dumps(
+        {"email": email, "error": (error or "")[:500]}
+    )
+
     row = await session.execute(
         text(
             """
-            UPDATE jobs SET failed_count = failed_count + 1, error = COALESCE(error, :err)
+            UPDATE jobs
+            SET failed_count = failed_count + 1,
+                error = COALESCE(error, :err),
+                metadata = jsonb_set(
+                    metadata,
+                    '{failures}',
+                    COALESCE(metadata->'failures', '[]'::jsonb) || CAST(:rec AS jsonb)
+                )
             WHERE id = :id
             RETURNING total, done, failed_count
             """
         ),
-        {"id": job_id, "err": error[:500]},
+        {"id": job_id, "err": (error or "")[:500], "rec": failure_record},
     )
     await session.commit()
     return tuple(row.one())  # type: ignore[return-value]

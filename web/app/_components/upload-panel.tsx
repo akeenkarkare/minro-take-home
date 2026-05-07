@@ -12,6 +12,7 @@ type Job = {
   done: number;
   failed_count: number;
   error: string | null;
+  failures?: { email?: string | null; error?: string }[];
 };
 
 export default function UploadPanel() {
@@ -149,6 +150,21 @@ export default function UploadPanel() {
           ) : null}
           {job.status === "failed" && job.error ? (
             <p className="mt-2 text-xs text-red-600">{job.error}</p>
+          ) : null}
+          {job.failures && job.failures.length > 0 ? (
+            <details className="mt-3 text-xs">
+              <summary className="cursor-pointer text-red-700">
+                {job.failures.length} failed enrichment{job.failures.length === 1 ? "" : "s"} — show details
+              </summary>
+              <ul className="mt-2 space-y-1">
+                {job.failures.map((f, i) => (
+                  <li key={i} className="rounded border border-red-200 bg-red-50 p-2">
+                    <span className="font-mono">{f.email ?? "(unknown email)"}</span>
+                    <span className="ml-2 text-red-700">{f.error}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
           ) : null}
         </div>
       ) : null}

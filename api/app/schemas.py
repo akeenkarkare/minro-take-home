@@ -97,6 +97,7 @@ class JobOut(BaseModel):
     done: int
     failed_count: int
     error: str | None = None
+    failures: list[dict[str, Any]] = Field(default_factory=list)
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None

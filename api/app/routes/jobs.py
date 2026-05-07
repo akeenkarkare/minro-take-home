@@ -18,6 +18,8 @@ async def get_job(
     job = await jobs_store.get_job(session, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
+    metadata = job.get("metadata") or {}
+    failures = metadata.get("failures") or []
     return JobOut(
         id=job["id"],
         kind=job["kind"],
@@ -26,6 +28,7 @@ async def get_job(
         done=job["done"],
         failed_count=job["failed_count"],
         error=job["error"],
+        failures=failures if isinstance(failures, list) else [],
         created_at=job["created_at"],
         started_at=job["started_at"],
         finished_at=job["finished_at"],
