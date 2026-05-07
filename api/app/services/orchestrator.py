@@ -202,3 +202,21 @@ async def _replace_signals(
 
 # Module-level singleton. Sources register here at import time.
 orchestrator = Orchestrator()
+
+
+async def enrich(email: str, name: str) -> dict:
+    """Top-level enrichment entry point matching the OA spec signature.
+
+    Lazy-imports the registry to avoid a circular import (the registry
+    pulls in the orchestrator). Persists the record and returns the
+    canonical PersonOut shape as a dict.
+    """
+    from app.db import session_factory
+    from app.sources.registry import register_all
+
+    if not orchestrator._sources:
+        register_all(orchestrator)
+
+    async with session_factory()() as session:
+        person = await orchestrator.enrich(session, email, name)
+    return person.model_dump(mode="json")

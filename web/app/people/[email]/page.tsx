@@ -1,6 +1,13 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getPerson, getRelationships, type PersonOut, type Relationship } from "@/lib/api";
+import {
+  getPerson,
+  getRelationships,
+  getSignalsByField,
+  type PersonOut,
+  type Relationship,
+  type SignalRow,
+} from "@/lib/api";
 import { Card, CardBody, CardHeader, ConfidenceBadge } from "@/components/ui";
 
 export const dynamic = "force-dynamic";
@@ -24,6 +31,13 @@ export default async function PersonDetail(props: {
     relationships = await getRelationships(decoded);
   } catch {
     // non-fatal; just hide the card
+  }
+
+  let signalsByField: Record<string, SignalRow[]> = {};
+  try {
+    signalsByField = await getSignalsByField(decoded);
+  } catch {
+    // non-fatal
   }
 
   return (
@@ -168,19 +182,47 @@ export default async function PersonDetail(props: {
 
       <Card>
         <CardHeader>
-          <h2 className="text-base font-semibold">Per-field confidence</h2>
+          <h2 className="text-base font-semibold">Per-field confidence & sources</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Each field shows the strongest source's effective confidence (source weight × signal confidence).
+            Each field shows the materialized confidence (source weight × signal confidence) and every source that emitted a value for that field. Hover a source chip to see what it claimed.
           </p>
         </CardHeader>
-        <CardBody>
-          <ul className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
-            {Object.entries(person.field_confidence).map(([field, conf]) => (
-              <li key={field} className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">{field}</span>
-                <ConfidenceBadge value={conf} />
-              </li>
-            ))}
+        <CardBody className="p-0">
+          <ul>
+            {Object.entries(person.field_confidence).map(([field, conf]) => {
+              const contributors = signalsByField[field] ?? [];
+              return (
+                <li
+                  key={field}
+                  className="flex items-start justify-between gap-4 border-b border-border px-5 py-3 last:border-0"
+                >
+                  <div className="flex-1">
+                    <div className="text-sm font-medium">{field}</div>
+                    {contributors.length > 0 ? (
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        {contributors.map((c, i) => (
+                          <span
+                            key={`${c.source}-${i}`}
+                            title={c.value ?? "(null)"}
+                            className="rounded-full border border-border bg-accent px-2 py-0.5 font-mono text-[11px]"
+                          >
+                            {c.source}
+                            <span className="ml-1 text-muted-foreground">
+                              {c.confidence.toFixed(2)}
+                            </span>
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        no source attempted this field
+                      </div>
+                    )}
+                  </div>
+                  <ConfidenceBadge value={conf} />
+                </li>
+              );
+            })}
           </ul>
         </CardBody>
       </Card>

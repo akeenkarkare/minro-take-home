@@ -110,6 +110,22 @@ export async function getRelationships(email: string): Promise<Relationship[]> {
   return data.results;
 }
 
+export type SignalRow = {
+  source: string;
+  value: string | null;
+  confidence: number;
+  observed_at: string | null;
+};
+
+export async function getSignalsByField(
+  email: string
+): Promise<Record<string, SignalRow[]>> {
+  const data = await getJSON<{ by_field: Record<string, SignalRow[]> }>(
+    `/people/${encodeURIComponent(email)}/signals`
+  );
+  return data.by_field;
+}
+
 export async function getJob(id: string): Promise<JobOut> {
   return getJSON(`/jobs/${id}`);
 }

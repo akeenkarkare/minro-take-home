@@ -113,6 +113,41 @@ async def get_relationships(
     return {"results": await rel_svc.for_person(session, email)}
 
 
+@router.get("/people/{email}/signals")
+async def get_signals(
+    email: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Per-field signal breakdown: which sources contributed which value.
+
+    The OA spec calls this out explicitly: the person detail view must show
+    which sources contributed to each field. The `signals` table is the
+    audit log; we group it by field for easy UI rendering.
+    """
+    rows = await session.execute(
+        text(
+            """
+            SELECT field, source, value, confidence, observed_at
+            FROM signals
+            WHERE email = :email
+            ORDER BY field ASC, confidence DESC
+            """
+        ),
+        {"email": email.strip().lower()},
+    )
+    by_field: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        by_field.setdefault(r.field, []).append(
+            {
+                "source": r.source,
+                "value": r.value,
+                "confidence": float(r.confidence),
+                "observed_at": r.observed_at.isoformat() if r.observed_at else None,
+            }
+        )
+    return {"by_field": by_field}
+
+
 @router.post("/relationships/rebuild")
 async def rebuild_relationships() -> dict[str, str]:
     pool = await get_pool()
