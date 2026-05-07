@@ -25,6 +25,8 @@ import re
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
+
 
 log = logging.getLogger(__name__)
 
@@ -81,21 +83,33 @@ async def rebuild(session: AsyncSession) -> dict[str, int]:
     rows = await session.execute(
         text(
             """
-            SELECT email, company, company_domain, location, confidence
+            SELECT email, name, title, company, company_domain, company_description,
+                   location, confidence, raw->'github'->'orgs' AS github_orgs
             FROM people
             """
         )
     )
     people: list[dict] = []
     for r in rows:
+        gh_orgs: list[str] = []
+        try:
+            for o in (r.github_orgs or []):
+                if isinstance(o, dict) and o.get("login"):
+                    gh_orgs.append(str(o["login"]).lower())
+        except Exception:
+            pass
         people.append(
             {
                 "email": r.email,
+                "title": r.title,
+                "company_raw": r.company,
+                "company_description": r.company_description,
                 "company": _normalize_company(r.company),
                 "company_domain": (r.company_domain or "").lower() or None,
                 "email_domain": r.email.split("@", 1)[-1].lower() if "@" in r.email else None,
                 "location": _normalize_location(r.location),
                 "confidence": float(r.confidence or 0.0),
+                "github_orgs": gh_orgs,
             }
         )
 
@@ -105,6 +119,7 @@ async def rebuild(session: AsyncSession) -> dict[str, int]:
     by_email_domain: dict[str, list[str]] = {}
     by_university: dict[str, list[str]] = {}
     by_location: dict[str, list[str]] = {}
+    by_github_org: dict[str, list[str]] = {}
 
     for p in people:
         if p["company"]:
@@ -118,6 +133,8 @@ async def rebuild(session: AsyncSession) -> dict[str, int]:
                 by_university.setdefault(ed, []).append(p["email"])
         if p["location"]:
             by_location.setdefault(p["location"], []).append(p["email"])
+        for org in p["github_orgs"]:
+            by_github_org.setdefault(org, []).append(p["email"])
 
     # Reset our own kinds before reinserting to keep counts consistent.
     await session.execute(
@@ -125,7 +142,8 @@ async def rebuild(session: AsyncSession) -> dict[str, int]:
             """
             DELETE FROM relationships
             WHERE kind IN ('same_company', 'same_email_domain',
-                           'same_university', 'same_location')
+                           'same_university', 'same_location',
+                           'same_github_org', 'same_industry')
             """
         )
     )
@@ -179,6 +197,42 @@ async def rebuild(session: AsyncSession) -> dict[str, int]:
     stats["same_location"] = await _insert_pairs(
         by_location, "same_location", 0.55, "location"
     )
+    stats["same_github_org"] = await _insert_pairs(
+        by_github_org, "same_github_org", 0.85, "github_org"
+    )
+
+    # Industry classification — one LLM call per ~50 enriched records, then
+    # group by tag and emit edges. No per-pair LLM cost.
+    if settings().anthropic_api_key:
+        try:
+            from app.llm.industry import classify_batch
+
+            inputs = [
+                {
+                    "email": p["email"],
+                    "title": p["title"],
+                    "company": p["company_raw"],
+                    "company_description": p["company_description"],
+                }
+                for p in people
+                if p["company_raw"] or p["company_description"] or p["title"]
+            ]
+            tags: dict[str, str | None] = {}
+            CHUNK = 40
+            for i in range(0, len(inputs), CHUNK):
+                tags.update(await classify_batch(inputs[i : i + CHUNK]))
+            by_industry: dict[str, list[str]] = {}
+            for email, tag in tags.items():
+                if tag and tag != "other":
+                    by_industry.setdefault(tag, []).append(email)
+            stats["same_industry"] = await _insert_pairs(
+                by_industry, "same_industry", 0.65, "industry"
+            )
+        except Exception:
+            log.exception("industry classification failed; skipping")
+            stats["same_industry"] = 0
+    else:
+        stats["same_industry"] = 0
 
     await session.commit()
     return stats
